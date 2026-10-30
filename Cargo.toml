@@ -1,0 +1,30 @@
+[package]
+name = "munnel"
+version = "0.2.0"
+edition = "2024"
+
+[dependencies]
+aes-gcm = "0.11.1"
+argon2 = "0.6.0"
+base64 = "0.23.1"
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "wgpu", "clipboard"] }
+getrandom = "0.4.3"
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[dev-dependencies]
+rand = "0.10.3"
+russh = { version = "0.65.0", default-features = false, features = ["ring", "flate2"] }
+tokio = { version = "1.54.1", features = ["full"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package.argon2]
+opt-level = 3 # key derivation is painfully slow unoptimized
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

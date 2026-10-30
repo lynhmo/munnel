@@ -1,0 +1,9 @@
+/target/
+/dist/
+/data/
+.remember/
+*.pdb
+# never commit keys or app data
+munnel.json
+known_hosts
+askpass.cmd

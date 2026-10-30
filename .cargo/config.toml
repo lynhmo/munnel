@@ -1,0 +1,6 @@
+[build]
+rustc-wrapper = "sccache"
+
+# no vcruntime140.dll needed on the target machine
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
