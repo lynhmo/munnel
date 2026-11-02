@@ -204,14 +204,19 @@ pub struct App {
     last_tick: Instant,
     /// create / unlock screen shown while the db is locked
     gate: MasterDraft,
+    term_open: bool,
+    /// shell started the first time the drawer opens
+    term: Option<crate::term::Term>,
+    term_line: String,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(ctx: &egui::Context) -> Self {
         let mut db = Db::load();
         db.unlock_saved();
+        set_theme(ctx, db.light);
         let gate = MasterDraft { remember: db.remembers(), ..Default::default() };
-        let mut app = Self { db, runner: Runner::default(), dlg: Dlg::None, sub: Dlg::None, mgr_open: false, mgr_keys: false, msg: None, last_tick: Instant::now(), gate };
+        let mut app = Self { db, runner: Runner::default(), dlg: Dlg::None, sub: Dlg::None, mgr_open: false, mgr_keys: false, msg: None, last_tick: Instant::now(), gate, term_open: false, term: None, term_line: String::new() };
         if !app.db.locked() {
             app.autostart();
         }
@@ -308,7 +313,7 @@ impl App {
     }
 
     fn table(&mut self, ui: &mut egui::Ui) {
-        let (mut act, mut dirty) = (None, false);
+        let (mut act, mut dirty, mut connected) = (None, false, vec![]);
         egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
             Grid::new("tunnels").striped(true).spacing([16.0, 8.0]).show(ui, |ui| {
                 for h in ["Name", "Type", "Start/stop", "Status", "Forward port", "Destination server", "SSH server", "Settings"] {
@@ -326,6 +331,9 @@ impl App {
                     ui.strong(t.kind.label());
                     let state = self.runner.state(&t.id);
                     let busy = matches!(state, State::Running | State::Reconnecting(_));
+                    if state == State::Running {
+                        connected.push(store::Server::of(t));
+                    }
                     ui.horizontal(|ui| {
                         if ui.add_enabled(!busy, egui::Button::new(ic('\u{E768}', "Start"))).clicked() {
                             act = Some(Act::Start(t.id.clone()));
@@ -364,6 +372,12 @@ impl App {
                 ui.vertical_centered(|ui| ui.weak("No tunnels yet - click 'New SSH tunnel'."));
             }
         });
+        for s in connected {
+            if !self.db.servers.contains(&s) {
+                self.db.servers.insert(0, s);
+                dirty = true;
+            }
+        }
         if dirty {
             self.save();
         }
@@ -409,9 +423,16 @@ impl App {
             if ui.button(ic('\u{E192}', "Identities & keys")).clicked() {
                 self.mgr_open = true;
             }
+            ui.toggle_value(&mut self.term_open, ic('\u{E756}', "Terminal"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(ic('\u{E7E8}', "Exit")).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                let (icon, label) = if self.db.light { ('\u{E708}', "Dark") } else { ('\u{E706}', "Light") };
+                if ui.button(ic(icon, label)).clicked() {
+                    self.db.light = !self.db.light;
+                    set_theme(ui.ctx(), self.db.light);
+                    self.save();
                 }
                 if ui.button(ic('\u{E72E}', "Master password")).clicked() {
                     self.dlg = Dlg::Master(MasterDraft { remember: self.db.remembers(), ..Default::default() });
@@ -419,6 +440,48 @@ impl App {
             });
         });
         ui.add_space(6.0);
+    }
+
+    fn terminal(&mut self, ui: &mut egui::Ui) {
+        if self.term.is_none() {
+            match crate::term::Term::spawn(ui.ctx()) {
+                Ok(t) => self.term = Some(t),
+                Err(e) => {
+                    ui.colored_label(RED, e);
+                    return;
+                }
+            }
+        }
+        let Some(term) = &mut self.term else { return };
+        let mono = egui::TextStyle::Monospace;
+        let mut restart = false;
+        ui.horizontal(|ui| {
+            ui.strong("Terminal (PowerShell)");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("Close").clicked() {
+                    self.term_open = false;
+                }
+                restart = ui.small_button("Restart").clicked();
+                if ui.small_button("Clear").clicked() {
+                    term.out.lock().map(|mut o| o.clear()).ok();
+                }
+            });
+        });
+        let input = egui::Panel::bottom("term_input").show_separator_line(false).show(ui, |ui| {
+            ui.add(TextEdit::singleline(&mut self.term_line).font(mono.clone()).desired_width(f32::INFINITY).hint_text("command, Enter to run"))
+        });
+        let r = input.inner;
+        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            term.send(&std::mem::take(&mut self.term_line));
+            r.request_focus();
+        }
+        let text = term.out.lock().map(|o| o.clone()).unwrap_or_default();
+        egui::ScrollArea::both().auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
+            ui.add(egui::Label::new(RichText::new(text).text_style(mono)).extend());
+        });
+        if restart {
+            self.term = None;
+        }
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
@@ -489,6 +552,26 @@ impl App {
                 ui.add_visible(!dynamic, egui::Label::new(l3));
                 ui.add_enabled(!dynamic, TextEdit::singleline(&mut d.dest_port).desired_width(260.0));
                 ui.end_row();
+                if !self.db.servers.is_empty() {
+                    ui.label("Recent SSH server");
+                    let mut pick = None;
+                    ComboBox::from_id_salt("recent").selected_text("(pick to fill in)").width(260.0).show_ui(ui, |ui| {
+                        for s in &self.db.servers {
+                            let user = self.db.identity(&s.identity).map_or("?", |i| i.user.as_str());
+                            if ui.selectable_label(false, format!("{user}@{}:{}", s.host, s.port)).clicked() {
+                                pick = Some(s.clone());
+                            }
+                        }
+                    });
+                    if let Some(s) = pick {
+                        d.ssh_host = s.host;
+                        d.ssh_port = s.port.to_string();
+                        if self.db.identity(&s.identity).is_some() {
+                            d.identity = Some(s.identity);
+                        }
+                    }
+                    ui.end_row();
+                }
                 ui.label("SSH server host");
                 ui.add(TextEdit::singleline(&mut d.ssh_host).desired_width(260.0));
                 ui.end_row();
@@ -773,6 +856,10 @@ impl App {
     }
 }
 
+fn set_theme(ctx: &egui::Context, light: bool) {
+    ctx.set_theme(if light { egui::ThemePreference::Light } else { egui::ThemePreference::Dark });
+}
+
 fn window(title: &str) -> egui::Window<'_> {
     egui::Window::new(title).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0])
 }
@@ -791,11 +878,15 @@ impl eframe::App for App {
         }
         ctx.request_repaint_after(Duration::from_millis(500));
         egui::Panel::bottom("bar").show(ui, |ui| self.bar(ui));
+        if self.term_open {
+            egui::Panel::bottom("terminal").resizable(true).default_size(220.0).show(ui, |ui| self.terminal(ui));
+        }
         egui::CentralPanel::default().show(ui, |ui| self.table(ui));
         self.dialogs(&ctx);
     }
 
     fn on_exit(&mut self) {
         self.runner.stop_all();
+        self.term = None;
     }
 }

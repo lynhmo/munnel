@@ -52,6 +52,20 @@ pub struct Identity {
     pub secret: String,
 }
 
+/// An SSH server a tunnel has connected to; offered when creating new tunnels.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct Server {
+    pub host: String,
+    pub port: u16,
+    pub identity: String,
+}
+
+impl Server {
+    pub fn of(t: &Tunnel) -> Self {
+        Server { host: t.ssh_host.clone(), port: t.ssh_port, identity: t.identity.clone() }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct Key {
     pub id: String,
@@ -67,6 +81,12 @@ pub struct Db {
     pub identities: Vec<Identity>,
     #[serde(default)]
     pub keys: Vec<Key>,
+    /// light UI theme instead of dark
+    #[serde(default)]
+    pub light: bool,
+    /// most recent first
+    #[serde(default)]
+    pub servers: Vec<Server>,
     /// None until a master password is created
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault: Option<Vault>,
@@ -243,7 +263,7 @@ impl Db {
     pub fn save(&self) -> std::io::Result<()> {
         let key = self.key.ok_or_else(|| std::io::Error::other("locked: master password not entered"))?;
         std::fs::create_dir_all(keys_dir())?;
-        let mut out = Db { tunnels: self.tunnels.clone(), identities: self.identities.clone(), keys: self.keys.clone(), vault: self.vault.clone(), key: None };
+        let mut out = Db { tunnels: self.tunnels.clone(), identities: self.identities.clone(), keys: self.keys.clone(), light: self.light, servers: self.servers.clone(), vault: self.vault.clone(), key: None };
         for i in out.identities.iter_mut().filter(|i| !i.secret.is_empty()) {
             i.secret = encrypt(&key, &i.secret);
         }

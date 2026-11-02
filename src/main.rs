@@ -16,7 +16,7 @@ fn main() -> eframe::Result {
         eframe::NativeOptions { viewport, renderer: eframe::Renderer::Wgpu, ..Default::default() },
         Box::new(|cc| {
             ui::install_icons(&cc.egui_ctx);
-            Ok(Box::new(ui::App::new()))
+            Ok(Box::new(ui::App::new(&cc.egui_ctx)))
         }),
     )
 }
